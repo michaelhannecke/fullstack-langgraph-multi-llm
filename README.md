@@ -29,10 +29,14 @@ Follow these steps to get the application running locally for development and te
 
 -   Node.js and npm (or yarn/pnpm)
 -   Python 3.11+
--   **`GEMINI_API_KEY`**: The backend agent requires a Google Gemini API key.
-    1.  Navigate to the `backend/` directory.
-    2.  Create a file named `.env` by copying the `backend/.env.example` file.
-    3.  Open the `.env` file and add your Gemini API key: `GEMINI_API_KEY="YOUR_ACTUAL_API_KEY"`
+-   **`GEMINI_API_KEY`**: Required for Google Search API and Gemini models.
+    1.  Navigate to the project root directory.
+    2.  Create a file named `secrets/.env` if it doesn't exist.
+    3.  Open the `secrets/.env` file and add your Gemini API key: `GEMINI_API_KEY="YOUR_ACTUAL_API_KEY"`
+-   **Ollama** (optional): For using local Llama3.2 models instead of Gemini.
+    1.  Install Ollama from [https://ollama.ai](https://ollama.ai)
+    2.  Pull the Llama3.2 model: `ollama pull llama3.2:latest`
+    3.  Ensure Ollama server is running: `ollama serve` (usually runs on http://localhost:11434)
 
 **2. Install Dependencies:**
 
@@ -55,9 +59,20 @@ npm install
 **Backend & Frontend:**
 
 ```bash
+# Using Google Gemini models (default)
 make dev
+
+# Using local Ollama/Llama3.2 models
+make dev MODEL=ollama
 ```
-This will run the backend and frontend development servers.    Open your browser and navigate to the frontend development server URL (e.g., `http://localhost:5173/app`).
+
+**Model Provider Options:**
+- **Gemini** (default): Uses Google Gemini models for all text generation tasks
+- **Ollama**: Uses local Ollama/Llama3.2 models for text generation (requires Ollama server running)
+
+**Note:** Web research always uses Google Search API regardless of model provider, as this functionality is only available through Google's ecosystem.
+
+This will run the backend and frontend development servers. Open your browser and navigate to the frontend development server URL (e.g., `http://localhost:5173/app`).
 
 _Alternatively, you can run the backend and frontend development servers separately. For the backend, open a terminal in the `backend/` directory and run `langgraph dev`. The backend API will be available at `http://127.0.0.1:2024`. It will also open a browser window to the LangGraph UI. For the frontend, open a terminal in the `frontend/` directory and run `npm run dev`. The frontend will be available at `http://localhost:5173`._
 
