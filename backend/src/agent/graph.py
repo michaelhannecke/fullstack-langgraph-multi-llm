@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 
 from agent.tools_and_schemas import SearchQueryList, Reflection
 from dotenv import load_dotenv
@@ -16,6 +17,11 @@ from agent.state import (
     WebSearchState,
 )
 from agent.configuration import Configuration
+from agent.llm_factory import (
+    create_query_generator_llm,
+    create_reflection_llm,
+    create_answer_llm,
+)
 from agent.prompts import (
     get_current_date,
     query_writer_instructions,
@@ -31,7 +37,9 @@ from agent.utils import (
     resolve_urls,
 )
 
-load_dotenv()
+# Load environment variables from secrets/.env
+secrets_dir = Path(__file__).parent.parent.parent.parent / "secrets"
+load_dotenv(secrets_dir / ".env")
 
 if os.getenv("GEMINI_API_KEY") is None:
     raise ValueError("GEMINI_API_KEY is not set")
@@ -44,8 +52,8 @@ genai_client = Client(api_key=os.getenv("GEMINI_API_KEY"))
 def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerationState:
     """LangGraph node that generates search queries based on the User's question.
 
-    Uses Gemini 2.0 Flash to create an optimized search queries for web research based on
-    the User's question.
+    Uses the configured LLM provider (Gemini or Ollama) to create optimized search queries 
+    for web research based on the User's question.
 
     Args:
         state: Current graph state containing the User's question
@@ -60,13 +68,8 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
     if state.get("initial_search_query_count") is None:
         state["initial_search_query_count"] = configurable.number_of_initial_queries
 
-    # init Gemini 2.0 Flash
-    llm = ChatGoogleGenerativeAI(
-        model=configurable.query_generator_model,
-        temperature=1.0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
+    # Create LLM using factory
+    llm = create_query_generator_llm(configurable)
     structured_llm = llm.with_structured_output(SearchQueryList)
 
     # Format the prompt
@@ -95,7 +98,10 @@ def continue_to_web_research(state: QueryGenerationState):
 def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
     """LangGraph node that performs web research using the native Google Search API tool.
 
-    Executes a web search using the native Google Search API tool in combination with Gemini 2.0 Flash.
+    NOTE: This function always uses Google's Search API and Gemini models regardless of the 
+    configured model provider. This is because Google Search API with grounding metadata 
+    is only available through Google's ecosystem. Other LLM providers (like Ollama) don't 
+    have access to this integrated search functionality.
 
     Args:
         state: Current graph state containing the search query and research loop count
@@ -111,12 +117,21 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
         research_topic=state["search_query"],
     )
 
-    # Uses the google genai client as the langchain client doesn't return grounding metadata
+    # IMPORTANT: Always use Google's genai client for web research regardless of model provider
+    # This is the only way to access Google Search API with grounding metadata for citations
+    # Force use of Gemini model for web research even if Ollama is selected as provider
+    if configurable.model_provider == "gemini":
+        # Use the configured Gemini model from the provider mapping
+        models = configurable.get_models_for_provider()
+        gemini_model = models["query_generator_model"]
+    else:
+        # Force use of a default Gemini model for web research when using Ollama
+        gemini_model = "gemini-2.0-flash"
     response = genai_client.models.generate_content(
-        model=configurable.query_generator_model,
+        model=gemini_model,  # Always use Gemini model for search+generation
         contents=formatted_prompt,
         config={
-            "tools": [{"google_search": {}}],
+            "tools": [{"google_search": {}}],  # Google Search API tool
             "temperature": 0,
         },
     )
@@ -162,13 +177,29 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
         research_topic=get_research_topic(state["messages"]),
         summaries="\n\n---\n\n".join(state["web_research_result"]),
     )
-    # init Reasoning Model
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,
-        temperature=1.0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
+    # Create LLM using factory - if custom reasoning_model provided, use it
+    if reasoning_model != configurable.reflection_model:
+        # Custom model specified, create appropriate LLM based on provider
+        if configurable.model_provider == "ollama":
+            # When using Ollama, always use llama3.2 regardless of frontend model selection
+            from langchain_ollama import ChatOllama
+            llm = ChatOllama(
+                model="llama3.2:latest",  # Force Ollama model
+                base_url=configurable.ollama_base_url,
+                temperature=1.0,
+            )
+        else:
+            # Use the custom Gemini model as specified
+            llm = ChatGoogleGenerativeAI(
+                model=reasoning_model,
+                temperature=1.0,
+                max_retries=2,
+                api_key=os.getenv("GEMINI_API_KEY"),
+            )
+    else:
+        # Use default reflection model from factory
+        llm = create_reflection_llm(configurable)
+    
     result = llm.with_structured_output(Reflection).invoke(formatted_prompt)
 
     return {
@@ -241,13 +272,29 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
         summaries="\n---\n\n".join(state["web_research_result"]),
     )
 
-    # init Reasoning Model, default to Gemini 2.5 Flash
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,
-        temperature=0,
-        max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
-    )
+    # Create LLM using factory - if custom reasoning_model provided, use it
+    if reasoning_model != configurable.answer_model:
+        # Custom model specified, create appropriate LLM based on provider
+        if configurable.model_provider == "ollama":
+            # When using Ollama, always use llama3.2 regardless of frontend model selection
+            from langchain_ollama import ChatOllama
+            llm = ChatOllama(
+                model="llama3.2:latest",  # Force Ollama model
+                base_url=configurable.ollama_base_url,
+                temperature=0,
+            )
+        else:
+            # Use the custom Gemini model as specified
+            llm = ChatGoogleGenerativeAI(
+                model=reasoning_model,
+                temperature=0,
+                max_retries=2,
+                api_key=os.getenv("GEMINI_API_KEY"),
+            )
+    else:
+        # Use default answer model from factory
+        llm = create_answer_llm(configurable)
+    
     result = llm.invoke(formatted_prompt)
 
     # Replace the short urls with the original urls and add all used urls to the sources_gathered
