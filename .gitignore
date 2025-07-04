@@ -6,6 +6,8 @@ frontend/coverage/
 .DS_Store
 *.local
 
+**/CLAUDE.md
+
 # Logs
 logs
 *.log
